@@ -81,7 +81,7 @@ def main() -> None:
         result = metric.compute(predictions=decoded_preds, references=decoded_labels)
         prediction_lens = [np.count_nonzero(prediction != tokenizer.pad_token_id) for prediction in predictions]
         result["gen_len"] = float(np.mean(prediction_lens))
-        result = {key: round(value, 4) for key, value in result.items()}
+        result = {key: round(value, 4) if isinstance(value, (int, float)) else value for key, value in result.items()}
         return result
 
     data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
