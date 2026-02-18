@@ -1,6 +1,9 @@
 import argparse
 import json
 import random
+import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Iterable
 
@@ -20,6 +23,68 @@ def iter_subset(subset: str, limit: int | None) -> Iterable[dict]:
         if limit is not None and index >= limit:
             break
         yield row
+
+
+def iter_subset_rows_api(
+    subset: str,
+    limit: int | None,
+    page_size: int,
+    retries: int,
+    retry_wait_seconds: float,
+    request_interval_seconds: float,
+) -> Iterable[dict]:
+    base_url = "https://datasets-server.huggingface.co/rows"
+    dataset_name = "HuggingFaceFW/finetranslations"
+
+    produced = 0
+    offset = 0
+
+    while True:
+        if limit is not None and produced >= limit:
+            break
+
+        current_length = page_size
+        if limit is not None:
+            current_length = min(current_length, limit - produced)
+            if current_length <= 0:
+                break
+
+        query = urllib.parse.urlencode(
+            {
+                "dataset": dataset_name,
+                "config": subset,
+                "split": "train",
+                "offset": offset,
+                "length": current_length,
+            }
+        )
+        url = f"{base_url}?{query}"
+
+        payload = None
+        for attempt in range(retries + 1):
+            try:
+                with urllib.request.urlopen(url, timeout=60) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                break
+            except Exception:
+                if attempt >= retries:
+                    raise
+                time.sleep(retry_wait_seconds * (attempt + 1))
+
+        rows = payload.get("rows", []) if payload else []
+        if not rows:
+            break
+
+        for wrapped_row in rows:
+            row = wrapped_row.get("row", wrapped_row)
+            yield row
+            produced += 1
+            if limit is not None and produced >= limit:
+                break
+
+        offset += len(rows)
+        if request_interval_seconds > 0:
+            time.sleep(request_interval_seconds)
 
 
 def write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -62,6 +127,36 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--train-ratio", type=float, default=0.98)
     parser.add_argument("--validation-ratio", type=float, default=0.01)
+    parser.add_argument(
+        "--data-backend",
+        choices=["streaming", "rows-api"],
+        default="streaming",
+        help="Source backend: HF datasets streaming or datasets-server rows API.",
+    )
+    parser.add_argument(
+        "--rows-api-page-size",
+        type=int,
+        default=100,
+        help="Rows API page size when --data-backend rows-api is used.",
+    )
+    parser.add_argument(
+        "--rows-api-retries",
+        type=int,
+        default=5,
+        help="Rows API retries per page.",
+    )
+    parser.add_argument(
+        "--rows-api-retry-wait-seconds",
+        type=float,
+        default=1.0,
+        help="Base wait between rows API retries.",
+    )
+    parser.add_argument(
+        "--rows-api-request-interval-seconds",
+        type=float,
+        default=0.0,
+        help="Wait time between successful rows API page requests.",
+    )
     args = parser.parse_args()
 
     max_per_subset = None if args.max_samples_per_subset == -1 else args.max_samples_per_subset
@@ -69,7 +164,19 @@ def main() -> None:
     rows: list[dict] = []
     for subset in args.subsets:
         print(f"Streaming subset: {subset}")
-        for row in tqdm(iter_subset(subset, max_per_subset), desc=subset):
+        if args.data_backend == "rows-api":
+            iterator = iter_subset_rows_api(
+                subset=subset,
+                limit=max_per_subset,
+                page_size=args.rows_api_page_size,
+                retries=args.rows_api_retries,
+                retry_wait_seconds=args.rows_api_retry_wait_seconds,
+                request_interval_seconds=args.rows_api_request_interval_seconds,
+            )
+        else:
+            iterator = iter_subset(subset, max_per_subset)
+
+        for row in tqdm(iterator, desc=subset):
             source = (row.get("og_full_text") or "").strip()
             target = (row.get("translated_text") or "").strip()
             if not source or not target:
@@ -119,6 +226,7 @@ def main() -> None:
         "num_train": len(train_rows),
         "num_validation": len(valid_rows),
         "num_test": len(test_rows),
+        "data_backend": args.data_backend,
         "max_samples_per_subset": args.max_samples_per_subset,
         "min_source_chars": args.min_source_chars,
         "drop_early_stop": args.drop_early_stop,
