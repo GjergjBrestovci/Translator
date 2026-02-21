@@ -30,6 +30,17 @@ def main() -> None:
     parser.add_argument("--save-steps", type=int, default=400)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=2)
+    parser.add_argument("--generation-max-length", type=int, default=192)
+    parser.add_argument("--generation-num-beams", type=int, default=2)
+    parser.add_argument("--dataloader-num-workers", type=int, default=0)
+    parser.add_argument("--eval-accumulation-steps", type=int, default=4)
+    parser.add_argument("--filter-noisy-pairs", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--min-source-chars", type=int, default=20)
+    parser.add_argument("--min-target-chars", type=int, default=10)
+    parser.add_argument("--max-source-chars", type=int, default=1200)
+    parser.add_argument("--max-target-chars", type=int, default=1200)
+    parser.add_argument("--min-length-ratio", type=float, default=0.4)
+    parser.add_argument("--max-length-ratio", type=float, default=2.5)
     parser.add_argument("--fp16", action="store_true")
     args = parser.parse_args()
 
@@ -39,6 +50,28 @@ def main() -> None:
         "test": str(args.data_dir / "test.jsonl"),
     }
     dataset = load_dataset("json", data_files=data_files)
+
+    if args.filter_noisy_pairs:
+        before_sizes = {split: len(dataset[split]) for split in dataset.keys()}
+
+        def keep_pair(example: dict) -> bool:
+            source = (example.get("source") or "").strip()
+            target = (example.get("target") or "").strip()
+            source_len = len(source)
+            target_len = len(target)
+            if source_len < args.min_source_chars or target_len < args.min_target_chars:
+                return False
+            if source_len > args.max_source_chars or target_len > args.max_target_chars:
+                return False
+            ratio = target_len / max(source_len, 1)
+            if ratio < args.min_length_ratio or ratio > args.max_length_ratio:
+                return False
+            return True
+
+        dataset = dataset.filter(keep_pair, desc="Filtering noisy pairs")
+        after_sizes = {split: len(dataset[split]) for split in dataset.keys()}
+        print("Dataset filtering:")
+        print({"before": before_sizes, "after": after_sizes})
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name)
@@ -63,7 +96,8 @@ def main() -> None:
         remove_columns=dataset["train"].column_names,
     )
 
-    metric = evaluate.load("sacrebleu")
+    bleu_metric = evaluate.load("sacrebleu")
+    chrf_metric = evaluate.load("chrf")
 
     def compute_metrics(eval_pred):
         predictions, labels = eval_pred
@@ -78,7 +112,10 @@ def main() -> None:
         decoded_preds = [prediction.strip() for prediction in decoded_preds]
         decoded_labels = [[label.strip()] for label in decoded_labels]
 
-        result = metric.compute(predictions=decoded_preds, references=decoded_labels)
+        result = bleu_metric.compute(predictions=decoded_preds, references=decoded_labels)
+        decoded_labels_flat = [item[0] for item in decoded_labels]
+        chrf = chrf_metric.compute(predictions=decoded_preds, references=decoded_labels_flat)
+        result["chrf"] = chrf.get("score", 0.0)
         prediction_lens = [np.count_nonzero(prediction != tokenizer.pad_token_id) for prediction in predictions]
         result["gen_len"] = float(np.mean(prediction_lens))
         result = {key: round(value, 4) if isinstance(value, (int, float)) else value for key, value in result.items()}
@@ -100,6 +137,10 @@ def main() -> None:
         eval_steps=args.eval_steps,
         save_steps=args.save_steps,
         predict_with_generate=True,
+        generation_max_length=args.generation_max_length,
+        generation_num_beams=args.generation_num_beams,
+        dataloader_num_workers=args.dataloader_num_workers,
+        eval_accumulation_steps=args.eval_accumulation_steps,
         load_best_model_at_end=True,
         metric_for_best_model="score",
         greater_is_better=True,
