@@ -34,7 +34,8 @@ def main() -> None:
     parser.add_argument("--generation-num-beams", type=int, default=2)
     parser.add_argument("--dataloader-num-workers", type=int, default=0)
     parser.add_argument("--eval-accumulation-steps", type=int, default=4)
-    parser.add_argument("--filter-noisy-pairs", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--resume-from-checkpoint", type=str, default=None)
+    parser.add_argument("--filter-noisy-pairs", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--min-source-chars", type=int, default=20)
     parser.add_argument("--min-target-chars", type=int, default=10)
     parser.add_argument("--max-source-chars", type=int, default=1200)
@@ -72,6 +73,9 @@ def main() -> None:
         after_sizes = {split: len(dataset[split]) for split in dataset.keys()}
         print("Dataset filtering:")
         print({"before": before_sizes, "after": after_sizes})
+    else:
+        print("Dataset filtering disabled. Using full splits:")
+        print({split: len(dataset[split]) for split in dataset.keys()})
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name)
@@ -159,7 +163,7 @@ def main() -> None:
         compute_metrics=compute_metrics,
     )
 
-    trainer.train()
+    trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
     test_metrics = trainer.evaluate(eval_dataset=tokenized["test"], metric_key_prefix="test")
 
     trainer.save_model(str(args.output_dir / "final"))
