@@ -2,22 +2,47 @@
 """CLI tool for Albanian ↔ English translation using a fine-tuned model."""
 
 import argparse
+import logging
+import os
 import sys
 from pathlib import Path
 
+import torch
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+    stream=sys.stderr,
+)
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Device
+# ---------------------------------------------------------------------------
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def load_model(model_dir: str):
+    logger.info("Loading model from %s onto %s …", model_dir, DEVICE)
     tokenizer = AutoTokenizer.from_pretrained(model_dir)
     model = AutoModelForSeq2SeqLM.from_pretrained(model_dir)
+    model.to(DEVICE)
     model.eval()
+    logger.info("Model ready.")
     return tokenizer, model
 
 
 def translate(text: str, tokenizer, model, max_length: int = 512) -> str:
-    inputs = tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
-    outputs = model.generate(**inputs, max_new_tokens=max_length, num_beams=4)
+    inputs = tokenizer(
+        text, return_tensors="pt", truncation=True, max_length=max_length
+    ).to(DEVICE)
+    with torch.no_grad():
+        outputs = model.generate(**inputs, max_new_tokens=max_length, num_beams=4)
     return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
 
@@ -26,8 +51,10 @@ def main() -> None:
     parser.add_argument(
         "--model-dir",
         type=str,
-        default="outputs/opusmt-alb-en-ft-3ep-full/final",
-        help="Path to fine-tuned model directory",
+        default=os.environ.get(
+            "TRANSLATOR_MODEL_DIR", "outputs/opusmt-alb-en-ft-3ep-full/final"
+        ),
+        help="Path to fine-tuned model directory (or set TRANSLATOR_MODEL_DIR env var)",
     )
     parser.add_argument(
         "--max-length",
@@ -44,20 +71,18 @@ def main() -> None:
 
     model_dir = args.model_dir
     if not Path(model_dir).exists():
-        print(f"Model not found at {model_dir}", file=sys.stderr)
-        print("Train a model first or pass --model-dir to a valid checkpoint.", file=sys.stderr)
+        logger.error("Model not found at %s", model_dir)
+        logger.error("Train a model first or pass --model-dir to a valid checkpoint.")
         sys.exit(1)
 
-    print(f"Loading model from {model_dir}…", file=sys.stderr)
     tokenizer, model = load_model(model_dir)
-    print("Ready.\n", file=sys.stderr)
 
     if args.text:
         source = " ".join(args.text)
         result = translate(source, tokenizer, model, args.max_length)
         print(result)
     else:
-        print("Interactive mode — type Albanian text, get English back. Ctrl+C to quit.\n", file=sys.stderr)
+        logger.info("Interactive mode — type Albanian text, get English back. Ctrl+C to quit.\n")
         try:
             while True:
                 source = input("sq> ").strip()
@@ -66,7 +91,7 @@ def main() -> None:
                 result = translate(source, tokenizer, model, args.max_length)
                 print(f"en> {result}\n")
         except (KeyboardInterrupt, EOFError):
-            print("\nBye!", file=sys.stderr)
+            logger.info("Bye!")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,6 @@
 import argparse
+import logging
+import sys
 from pathlib import Path
 
 import evaluate
@@ -11,6 +13,16 @@ from transformers import (
     Seq2SeqTrainer,
     Seq2SeqTrainingArguments,
 )
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -45,11 +57,31 @@ def main() -> None:
     parser.add_argument("--fp16", action="store_true")
     args = parser.parse_args()
 
+    # ------------------------------------------------------------------
+    # Validate data files before doing anything expensive
+    # ------------------------------------------------------------------
+    required_splits = {"train": "train.jsonl", "validation": "validation.jsonl", "test": "test.jsonl"}
+    missing = [
+        str(args.data_dir / fname)
+        for fname in required_splits.values()
+        if not (args.data_dir / fname).exists()
+    ]
+    if missing:
+        logger.error("Missing data file(s):\n  %s", "\n  ".join(missing))
+        logger.error("Run scripts/prepare_dataset.py first, or point --data-dir at an existing dataset.")
+        sys.exit(1)
+    logger.info("Data directory: %s — all splits present.", args.data_dir)
+
+    # ------------------------------------------------------------------
+    # Validate output directory parent exists (create if needed)
+    # ------------------------------------------------------------------
+    args.output_dir.mkdir(parents=True, exist_ok=True)
+
     data_files = {
-        "train": str(args.data_dir / "train.jsonl"),
-        "validation": str(args.data_dir / "validation.jsonl"),
-        "test": str(args.data_dir / "test.jsonl"),
+        split: str(args.data_dir / fname)
+        for split, fname in required_splits.items()
     }
+    logger.info("Loading dataset from %s …", args.data_dir)
     dataset = load_dataset("json", data_files=data_files)
 
     if args.filter_noisy_pairs:
@@ -71,12 +103,12 @@ def main() -> None:
 
         dataset = dataset.filter(keep_pair, desc="Filtering noisy pairs")
         after_sizes = {split: len(dataset[split]) for split in dataset.keys()}
-        print("Dataset filtering:")
-        print({"before": before_sizes, "after": after_sizes})
+        logger.info("Dataset filtering: before=%s  after=%s", before_sizes, after_sizes)
     else:
-        print("Dataset filtering disabled. Using full splits:")
-        print({split: len(dataset[split]) for split in dataset.keys()})
+        split_sizes = {split: len(dataset[split]) for split in dataset.keys()}
+        logger.info("Dataset filtering disabled. Split sizes: %s", split_sizes)
 
+    logger.info("Loading tokenizer and model: %s", args.model_name)
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name)
 
@@ -94,6 +126,7 @@ def main() -> None:
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
+    logger.info("Tokenizing dataset …")
     tokenized = dataset.map(
         preprocess,
         batched=True,
@@ -122,7 +155,10 @@ def main() -> None:
         result["chrf"] = chrf.get("score", 0.0)
         prediction_lens = [np.count_nonzero(prediction != tokenizer.pad_token_id) for prediction in predictions]
         result["gen_len"] = float(np.mean(prediction_lens))
-        result = {key: round(value, 4) if isinstance(value, (int, float)) else value for key, value in result.items()}
+        result = {
+            key: round(value, 4) if isinstance(value, (int, float)) else value
+            for key, value in result.items()
+        }
         return result
 
     data_collator = DataCollatorForSeq2Seq(tokenizer=tokenizer, model=model)
@@ -163,14 +199,17 @@ def main() -> None:
         compute_metrics=compute_metrics,
     )
 
+    logger.info("Starting training — output dir: %s", args.output_dir)
     trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
+
+    logger.info("Evaluating on test split …")
     test_metrics = trainer.evaluate(eval_dataset=tokenized["test"], metric_key_prefix="test")
 
-    trainer.save_model(str(args.output_dir / "final"))
-    tokenizer.save_pretrained(str(args.output_dir / "final"))
-
-    print("Test metrics:")
-    print(test_metrics)
+    final_dir = args.output_dir / "final"
+    trainer.save_model(str(final_dir))
+    tokenizer.save_pretrained(str(final_dir))
+    logger.info("Model saved to %s", final_dir)
+    logger.info("Test metrics: %s", test_metrics)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,39 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Model outputs (mount at runtime)
+outputs/
+data/
+
+# Development / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Test / lint artefacts
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Git
+.git/
+.github/
+
+# Colab notebooks (not needed in container)
+colab/
