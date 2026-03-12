@@ -2,6 +2,7 @@ import argparse
 import json
 import random
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -66,12 +67,31 @@ def iter_subset_rows_api(
                 with urllib.request.urlopen(url, timeout=60) as response:
                     payload = json.loads(response.read().decode("utf-8"))
                 break
+            except urllib.error.HTTPError as exc:
+                if exc.code in (400, 401, 403, 404):
+                    raise RuntimeError(
+                        f"Rows API returned HTTP {exc.code} for subset={subset!r}"
+                        f" offset={offset} — check dataset name and access rights"
+                    ) from exc
+                if attempt >= retries:
+                    raise RuntimeError(
+                        f"Rows API HTTP {exc.code} after {retries} retries"
+                        f" (subset={subset!r}, offset={offset})"
+                    ) from exc
+                time.sleep(retry_wait_seconds * (attempt + 1))
             except Exception:
                 if attempt >= retries:
                     raise
                 time.sleep(retry_wait_seconds * (attempt + 1))
 
-        rows = payload.get("rows", []) if payload else []
+        if payload is None:
+            break
+        if not isinstance(payload.get("rows"), list):
+            raise RuntimeError(
+                f"Unexpected API response structure (subset={subset!r}, offset={offset}):"
+                f" expected 'rows' list, got {type(payload.get('rows')).__name__!r}"
+            )
+        rows = payload["rows"]
         if not rows:
             break
 

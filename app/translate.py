@@ -88,8 +88,13 @@ def main() -> None:
                 source = input("sq> ").strip()
                 if not source:
                     continue
-                result = translate(source, tokenizer, model, args.max_length)
-                print(f"en> {result}\n")
+                try:
+                    result = translate(source, tokenizer, model, args.max_length)
+                    print(f"en> {result}\n")
+                except torch.cuda.OutOfMemoryError:
+                    logger.error("GPU out of memory — try a shorter input.")
+                except (RuntimeError, ValueError) as exc:
+                    logger.error("Translation error: %s", exc)
         except (KeyboardInterrupt, EOFError):
             logger.info("Bye!")
 

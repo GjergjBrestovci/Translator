@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM python:3.11-slim AS builder
+FROM python:3.11.11-slim AS builder
 
 WORKDIR /build
 
@@ -13,7 +13,7 @@ RUN pip install --upgrade pip \
     && pip install --no-cache-dir --prefix=/install -r requirements.txt
 
 # ── Runtime stage ─────────────────────────────────────────────────────────────
-FROM python:3.11-slim
+FROM python:3.11.11-slim
 
 WORKDIR /app
 
@@ -34,7 +34,7 @@ ENV TRANSLATOR_MODEL_DIR=/models \
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
 CMD ["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -34,8 +34,9 @@ MODEL_DIR = os.environ.get(
     "TRANSLATOR_MODEL_DIR",
     "outputs/opusmt-alb-en-ft-3ep-full/final",
 )
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:8000").split(",")
 RATE_LIMIT = os.environ.get("RATE_LIMIT", "30/minute")
+MAX_INPUT_TOKENS = 512  # opus-mt models support up to 512 input tokens
 
 # ---------------------------------------------------------------------------
 # Device
@@ -57,7 +58,7 @@ _model = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # noqa: ARG001
     global _tokenizer, _model
-    model_path = Path(MODEL_DIR)
+    model_path = Path(MODEL_DIR).resolve()
     if not model_path.exists():
         raise RuntimeError(
             f"Model directory not found: {MODEL_DIR}. "
@@ -104,7 +105,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 class TranslateRequest(BaseModel):
     text: str = Field(..., min_length=1, max_length=5000, description="Albanian text to translate")
-    max_length: int = Field(512, ge=1, le=1024, description="Max output token length")
+    max_length: int = Field(512, ge=1, le=1024, description="Max output tokens (input is always truncated to 512 tokens)")
     num_beams: int = Field(4, ge=1, le=10, description="Beam search width")
 
     model_config = {
@@ -151,7 +152,6 @@ def health():
     return {
         "status": "ok",
         "model_loaded": True,
-        "model_dir": MODEL_DIR,
         "device": str(DEVICE),
     }
 
@@ -171,7 +171,7 @@ def translate(req: TranslateRequest, request: Request):  # noqa: ARG001
             req.text,
             return_tensors="pt",
             truncation=True,
-            max_length=req.max_length,
+            max_length=MAX_INPUT_TOKENS,
         ).to(DEVICE)
         with torch.no_grad():
             outputs = _model.generate(
@@ -190,7 +190,7 @@ def translate(req: TranslateRequest, request: Request):  # noqa: ARG001
     return TranslateResponse(
         translation=translation,
         source_length=len(req.text),
-        model=MODEL_DIR,
+        model=Path(MODEL_DIR).name,
     )
 
 
@@ -210,7 +210,7 @@ def translate_batch(req: BatchTranslateRequest, request: Request):  # noqa: ARG0
             return_tensors="pt",
             truncation=True,
             padding=True,
-            max_length=req.max_length,
+            max_length=MAX_INPUT_TOKENS,
         ).to(DEVICE)
         with torch.no_grad():
             outputs = _model.generate(
@@ -229,7 +229,7 @@ def translate_batch(req: BatchTranslateRequest, request: Request):  # noqa: ARG0
     return BatchTranslateResponse(
         translations=translations,
         count=len(translations),
-        model=MODEL_DIR,
+        model=Path(MODEL_DIR).name,
     )
 
 
