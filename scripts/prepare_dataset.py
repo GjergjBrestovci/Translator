@@ -78,7 +78,20 @@ def iter_subset_rows_api(
                         f"Rows API HTTP {exc.code} after {retries} retries"
                         f" (subset={subset!r}, offset={offset})"
                     ) from exc
-                time.sleep(retry_wait_seconds * (attempt + 1))
+                if exc.code == 429:
+                    # Respect Retry-After header if present, otherwise exponential backoff
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    if retry_after is not None:
+                        try:
+                            wait = float(retry_after)
+                        except ValueError:
+                            wait = 60.0 * (2 ** attempt)
+                    else:
+                        wait = 60.0 * (2 ** attempt)  # 60s, 120s, 240s, …
+                    print(f"\nRate limited (429). Waiting {wait:.0f}s before retry {attempt + 1}/{retries} …")
+                    time.sleep(wait)
+                else:
+                    time.sleep(retry_wait_seconds * (attempt + 1))
             except Exception:
                 if attempt >= retries:
                     raise

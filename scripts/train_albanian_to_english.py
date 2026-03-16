@@ -55,6 +55,9 @@ def main() -> None:
     parser.add_argument("--min-length-ratio", type=float, default=0.4)
     parser.add_argument("--max-length-ratio", type=float, default=2.5)
     parser.add_argument("--fp16", action="store_true")
+    parser.add_argument("--save-total-limit", type=int, default=None,
+                        help="Keep only the last N checkpoints (plus the best). "
+                             "Recommended: 2–3 to avoid filling storage.")
     args = parser.parse_args()
 
     # ------------------------------------------------------------------
@@ -184,6 +187,7 @@ def main() -> None:
         load_best_model_at_end=True,
         metric_for_best_model="score",
         greater_is_better=True,
+        save_total_limit=args.save_total_limit,
         report_to="none",
         seed=args.seed,
         fp16=args.fp16,
