@@ -5,4 +5,4 @@ __pycache__/
 *.log
 outputs/
 data/
-.claude/agents
+.claude/
